@@ -1,0 +1,558 @@
+import streamlit as st
+import csv
+import io
+import json
+import sqlite3
+
+
+from worker import Worker
+from task import Task
+from scheduler import Scheduler
+from weather import get_weather
+import requests
+
+from database import (
+    create_database,
+    add_worker,
+    get_workers,
+    update_worker,
+    delete_worker,
+    add_task,
+    get_tasks,
+    update_task,
+    delete_task
+)
+
+
+# call the function to create the database and tables
+create_database()
+
+# Load workers and tasks from SQLite when the session starts
+if "database_loaded" not in st.session_state:
+    st.session_state.workers = get_workers()
+    st.session_state.tasks = get_tasks()
+    st.session_state.weekly_schedule = {}
+
+    st.session_state.database_loaded = True
+    
+
+DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+if "workers" not in st.session_state:
+    st.session_state.workers = []
+
+if "tasks" not in st.session_state:
+    st.session_state.tasks = []
+
+if "weekly_schedule" not in st.session_state:
+    st.session_state.weekly_schedule = {}
+
+
+
+
+def get_task_duration(task):
+    return task["duration"]
+
+
+def save_data():
+    data = {
+        "workers": st.session_state.workers,
+        "tasks": st.session_state.tasks,
+    }
+
+    with open("schedule_data.json", "w") as file:
+        json.dump(data, file, indent=4)
+
+def load_data():
+    try: 
+        with open("schedule_data.json", "r") as file:
+            data = json.load(file)
+        st.session_state.workers = data.get("workers", [])
+        st.session_state.tasks = data.get("tasks", [])
+
+            #clear the weekly schedule when loading data
+        st.session_state.weekly_schedule = {}
+
+        return True
+    except FileNotFoundError:
+        st.error("No saved data found. Please add workers and tasks first.")
+        return False
+    except json.JSONDecodeError:
+        st.error("Error reading saved data. Please ensure the file is not corrupted.")
+        return False
+
+
+def display_schedule(weekly_schedule):
+
+    for day, assignments in weekly_schedule.items():
+
+        st.subheader(day)
+
+        if not assignments:
+            st.write("No tasks assigned.")
+
+        else:
+            for assignment in assignments:
+                st.write(
+                    f"**{assignment['worker']}** — "
+                    f"{assignment['task']} "
+                    f"({assignment['duration']} minutes)"
+                )
+
+
+def schedule_to_csv(weekly_schedule):
+    output = io.StringIO()
+
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "Day",
+        "Worker",
+        "Task",
+        "Duration"
+    ])
+
+    for day, assignments in weekly_schedule.items():
+        for assignment in assignments:
+            writer.writerow([
+                day,
+                assignment["worker"],
+                assignment["task"],
+                assignment["duration"]
+            ])
+
+    return output.getvalue()
+
+st.set_page_config(
+    page_title="Schedule Automator",
+    layout="wide"
+)
+
+header_left, header_right = st.columns([5, 1])
+
+with header_left:
+    st.title(" Schedule Automator")
+    st.caption("Workforce Management Dashboard")
+
+with header_right:
+    try:
+        weather = get_weather()
+
+        temperature = weather["temperature_2m"]
+
+        st.metric(
+            label="🌤️ Oklahoma City",
+            value=f"{temperature:.0f}°F"
+        )
+
+    except (requests.RequestException, KeyError, ValueError, TypeError):
+        st.caption("Weather unavailable")
+
+worker_tab, task_tab, schedule_tab = st.tabs(
+    ["Workers", "Tasks", "Schedule"]
+)
+
+
+
+with worker_tab:
+
+    st.header("Workers")
+
+    st.subheader("Add Worker")
+
+    
+
+    worker_name = st.text_input(
+        "Worker name:",
+        key="worker_name_input"
+    )
+
+    availability = st.multiselect(
+        "Availability:",
+        DAYS,
+        key="worker_availability_input"
+    )
+
+    if st.button("Add Worker", key="add_worker_button"):
+
+        if not worker_name:
+            st.error("Please enter a worker name.")
+
+        elif not availability:
+            st.error("Please select at least one available day.")
+
+        else:
+            duplicate_found = False
+
+            for worker in st.session_state.workers:
+                if worker["name"] == worker_name:
+                    duplicate_found = True
+                    break
+
+            if duplicate_found:
+                st.error(
+                    f"A worker named '{worker_name}' already exists."
+                )
+
+            else:
+                try:
+                    # Save the worker to SQLite
+                    add_worker(worker_name, availability)
+
+                    # Refresh session state from the database
+                    st.session_state.workers = get_workers()
+
+                    # Clear the previously generated schedule
+                    st.session_state.weekly_schedule = {}
+
+                    st.success(
+                        f"Worker '{worker_name}' has been saved to the database."
+                    )
+
+                except sqlite3.IntegrityError:
+                    st.error(
+                        f"Worker '{worker_name}' already exists in the database."
+                    )
+
+    st.divider()
+
+    st.subheader("Worker Management")
+    st.caption("Manage team members and weekly availability")
+
+    if st.session_state.workers:
+
+        worker_table = []
+
+        for worker in st.session_state.workers:
+            worker_table.append({
+                "Worker": worker["name"],
+                "Available Days": ", ".join(worker["availability"])
+            })
+
+        st.dataframe(
+            worker_table,
+            width="stretch",
+            hide_index=True
+        )
+
+    else:
+        st.info("No workers added yet.")
+
+
+
+    if st.session_state.workers:
+
+        st.divider()
+
+        with st.expander("Edit or Delete Worker"):
+
+            worker_names = [
+                worker["name"]
+                for worker in st.session_state.workers
+            ]
+
+            selected_worker = st.selectbox(
+                "Select a worker:",
+                worker_names,
+                key="selected_worker"
+            )
+
+            selected_worker_data = None
+
+            for worker in st.session_state.workers:
+                if worker["name"] == selected_worker:
+                    selected_worker_data = worker
+                    break
+
+            updated_availability = st.multiselect(
+                "Update availability:",
+                DAYS,
+                default=selected_worker_data["availability"],
+                key="updated_worker_availability"
+            )
+
+            if st.button("Update Worker", key="update_worker_button"):
+
+                if not updated_availability:
+                    st.error("Please select at least one available day.")
+
+                else:
+                    try:
+                        # Update availability in SQLite
+                        updated = update_worker(
+                            selected_worker,
+                            updated_availability
+                        )
+
+                        if updated == 1:
+                            # Reload workers from SQLite
+                            st.session_state.workers = get_workers()
+
+                            # Clear outdated schedule
+                            st.session_state.weekly_schedule = {}
+
+                            st.success(
+                                f"Worker '{selected_worker}' has been updated."
+                            )
+                        else:
+                            st.error("Worker was not found in the database.")
+
+                    except sqlite3.Error as error:
+                        st.error(f"Database error: {error}")
+
+            if st.button("Delete Worker", key="delete_worker_button"):
+
+                try:
+                    deleted = delete_worker(selected_worker)
+
+                    if deleted == 1:
+                        st.session_state.workers = get_workers()
+                        st.session_state.weekly_schedule = {}
+
+                        st.rerun()
+                    else:
+                        st.error("Worker was not found in the database.")
+
+                except sqlite3.Error as error:
+                    st.error(f"Database error: {error}")
+
+
+with task_tab:
+
+    st.header("Tasks")
+
+    st.subheader("Add Task")
+
+    task_name = st.text_input(
+        "Task name:",
+        key="task_name_input"
+    )
+
+    task_duration = st.number_input(
+        "Duration in minutes:",
+        min_value=1,
+        key="task_duration_input"
+    )
+
+    rotating = st.checkbox(
+        "Rotating task",
+        key="rotating_task_input"
+    )
+
+    if st.button("Add Task", key="add_task_button"):
+
+        if not task_name:
+            st.error("Please enter a task name.")
+
+        else:
+            duplicate_found = False
+
+            for task in st.session_state.tasks:
+                if task["name"] == task_name:
+                    duplicate_found = True
+                    break
+
+            if duplicate_found:
+                st.error(
+                    f"A task named '{task_name}' already exists."
+                )
+
+            else:
+                try:
+                    # Save task to SQLite
+                    add_task(task_name, task_duration, rotating)
+
+                    # Reload tasks from SQLite
+                    st.session_state.tasks = get_tasks()
+
+                    # Clear outdated schedule
+                    st.session_state.weekly_schedule = {}
+
+                    st.success(
+                        f"Task '{task_name}' has been saved to the database."
+                    )
+
+                except sqlite3.IntegrityError:
+                    st.error(
+                        f"Task '{task_name}' already exists in the database."
+                    )
+
+
+    st.divider()
+
+    st.subheader("Current Tasks")
+
+    if st.session_state.tasks:
+
+        for task in st.session_state.tasks:
+
+            rotation_text = (
+                "Rotating"
+                if task.get("rotating", False)
+                else "Not Rotating"
+            )
+
+            st.write(
+                f"**{task['name']}** — "
+                f"{task['duration']} minutes — "
+                f"{rotation_text}"
+            )
+
+    else:
+        st.info("No tasks have been added yet.")
+
+
+    if st.session_state.tasks:
+
+        st.divider()
+
+        with st.expander("Edit or Delete Task"):
+
+            task_names = [
+                task["name"]
+                for task in st.session_state.tasks
+            ]
+
+            selected_task = st.selectbox(
+                "Select a task:",
+                task_names,
+                key="selected_task"
+            )
+
+            selected_task_data = None
+
+            for task in st.session_state.tasks:
+                if task["name"] == selected_task:
+                    selected_task_data = task
+                    break
+
+            updated_duration = st.number_input(
+                "Update duration:",
+                min_value=1,
+                value=selected_task_data["duration"],
+                key="updated_task_duration"
+            )
+
+            updated_rotating = st.checkbox(
+                "Rotating task",
+                value=selected_task_data.get(
+                    "rotating",
+                    False
+                ),
+                key="updated_task_rotating"
+            )
+
+            if st.button("Update Task", key="update_task_button"):
+
+                try:
+                    updated = update_task(
+                        selected_task,
+                        updated_duration,
+                        updated_rotating
+                    )
+
+                    if updated == 1:
+                        # Reload tasks from SQLite
+                        st.session_state.tasks = get_tasks()
+
+                        # Clear outdated schedule
+                        st.session_state.weekly_schedule = {}
+
+                        st.success(
+                            f"Task '{selected_task}' has been updated."
+                        )
+
+                    else:
+                        st.error("Task was not found in the database.")
+
+                except sqlite3.Error as error:
+                    st.error(f"Database error: {error}")
+
+            if st.button("Delete Task", key="delete_task_button"):
+
+                try:
+                    deleted = delete_task(selected_task)
+
+                    if deleted == 1:
+                        # Reload tasks from SQLite
+                        st.session_state.tasks = get_tasks()
+
+                        # Clear outdated schedule
+                        st.session_state.weekly_schedule = {}
+
+                        st.rerun()
+
+                    else:
+                        st.error("Task was not found in the database.")
+
+                except sqlite3.Error as error:
+                    st.error(f"Database error: {error}")
+
+
+with schedule_tab:
+
+    st.header("Weekly Schedule")
+
+    if not st.session_state.workers:
+
+        st.warning(
+            "Add at least one worker before generating a schedule."
+        )
+
+    elif not st.session_state.tasks:
+
+        st.warning(
+            "Add at least one task before generating a schedule."
+        )
+
+    else:
+
+        # Sort tasks from longest to shortest
+        sorted_tasks = sorted(
+            st.session_state.tasks,
+            key=get_task_duration,
+            reverse=True
+        )
+
+        if st.button("Generate Schedule"):
+
+            workers = [
+                Worker( 
+                    worker["name"],
+                    worker["availability"]
+                )
+                for worker in st.session_state.workers
+            ]
+
+            tasks = [
+                Task(
+                    task["name"],
+                    task["duration"],
+                    task["rotating"]
+                )
+                for task in st.session_state.tasks
+            ]
+
+            scheduler = Scheduler(workers, tasks)
+
+            st.session_state.weekly_schedule = (
+                scheduler.generate_weekly_schedule()
+            )
+
+        if st.session_state.weekly_schedule:
+
+            display_schedule(
+                st.session_state.weekly_schedule
+            )
+
+            csv_data = schedule_to_csv(
+                st.session_state.weekly_schedule
+            )
+
+            st.download_button(
+                label="Download Schedule as CSV",
+                data=csv_data,
+                file_name="weekly_schedule.csv",
+                mime="text/csv"
+            )

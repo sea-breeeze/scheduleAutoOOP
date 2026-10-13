@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# SQLite databases
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Environment variables and secrets
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Old local data
+schedule_data.json
+
+# Editor and OS files
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,30 @@
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local database files
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Environment variables and secrets
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Git files
+.git/
+.gitignore
+
+# Test and development files
+tests/
+test_*.py
+
+# Old saved data
+schedule_data.json

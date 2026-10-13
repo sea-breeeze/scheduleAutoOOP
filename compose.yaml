@@ -1,0 +1,14 @@
+services:
+  schedule-automator:
+    build: .
+    image: schedule-automator
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - schedule_data:/app/data
+    environment:
+      - DATABASE_PATH=/app/data/schedule.db
+    restart: unless-stopped
+
+volumes:
+  schedule_data:
